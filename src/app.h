@@ -130,6 +130,18 @@ class Application {
     bool m_escapePressedOnce = false;
     float m_clipAlpha = 0.0f;
 
+    // smooth scrolling
+    double   m_visualRefTime = 0.0;        // time (seconds) of the reference logical row
+    int      m_visualRefLinear = 0;        // logical row index at reference time
+    int      m_logicalRowCounter = 0;      // current logical global row index
+    double   m_rowRate = 4.0;              // rows per second, moving average
+    double   m_rowRateSmoothAlpha = 0.15;  // smoothing for rows/sec estimate
+    float    m_visualRow = 0.0f;           // current visual row used for rendering
+    float    m_visualSnapThreshold = 64.0f;// snap if visual jump > threshold
+    int      m_prevRow = -1;               // previously observed row
+    int      m_prevOrder = -1;             // previously observed order
+    bool     m_firstRowSync = true;        // initialize on first frame after module load
+
     // pattern data cache
     struct CacheItem { char text[16], attr[16]; };
     #if USE_PATTERN_CACHE

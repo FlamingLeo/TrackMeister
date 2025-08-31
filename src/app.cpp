@@ -514,6 +514,56 @@ void Application::uiSaveConfig() {
 
 ///// drawing
 
+// CUSTOM: helper method to compute row distance for smooth scrolling
+static int computeRowDistance(openmpt::module* mod, int orderA, int rowA, int orderB, int rowB) {
+    if (!mod) return rowB - rowA;
+    if (orderA == orderB) return rowB - rowA;
+
+    int numOrders = mod->get_num_orders();
+    int sum, cur, steps;
+
+    // try forward
+    sum = 0, cur = orderA;
+    int pat = mod->get_order_pattern(cur);
+    int plen = (pat != 65534) ? mod->get_pattern_num_rows(pat) : 0;
+    sum += (plen - rowA);
+    steps = 0;
+    while (steps < numOrders) {
+        cur = cur + 1;
+        if (cur >= numOrders) break;
+        int curPat = mod->get_order_pattern(cur);
+        if (curPat == 65534) { ++steps; continue; }
+        int curPlen = mod->get_pattern_num_rows(curPat);
+        if (cur == orderB) {
+            sum += rowB;
+            return sum;
+        }
+        sum += curPlen;
+        ++steps;
+    }
+    
+    // try backward
+    sum = 0, cur = orderA;
+    sum -= (rowA + 1);
+    steps = 0;
+    while (steps < numOrders) {
+        cur = cur - 1;
+        if (cur < 0) break;
+        int curPat = mod->get_order_pattern(cur);
+        if (curPat == 65534) { ++steps; continue; }
+        int curPlen = mod->get_pattern_num_rows(curPat);
+        if (cur == orderB) {
+            sum -= (curPlen - 1 - rowB);
+            return sum;
+        }
+        sum -= curPlen;
+        ++steps;
+    }
+    
+    // fallback
+    return rowB - rowA;
+}
+
 void Application::draw(float dt) {
     float fadeAlpha = 1.0f;
     m_renderer.setAlphaGamma(m_config.alphaGamma);
@@ -544,6 +594,101 @@ void Application::draw(float dt) {
         if (m_fadeActive) {
             fadeAlpha = float(float(m_fadeGain) / float(0x7FFFFFFF));
         }
+    }
+
+    // CUSTOM: per-row timing scroll update
+    if (m_mod) {
+        double nowPos = double(m_position);
+        bool snapped = false;
+
+        if (m_firstRowSync) {
+            // seed on first frame after module load
+            m_prevOrder = m_currentOrder;
+            m_prevRow = m_currentRow;
+            m_logicalRowCounter = 0;
+            m_visualRefLinear = m_logicalRowCounter;
+            m_visualRefTime = nowPos;
+            double estBpm = double(m_mod->get_current_tempo2());
+            if (estBpm <= 0.0) estBpm = 120.0;
+            m_rowRate = std::max(0.25, estBpm / 60.0 * 4.0);
+            m_visualRow = float(m_visualRefLinear);
+            m_firstRowSync = false;
+        } else {
+            // detect row/order change and update logical global counter
+            if ((m_currentOrder != m_prevOrder) || (m_currentRow != m_prevRow)) {
+                int deltaRows = computeRowDistance(m_mod, m_prevOrder, m_prevRow, m_currentOrder, m_currentRow);
+                m_logicalRowCounter += deltaRows;
+
+                // update row p sec estimate
+                double deltaT = nowPos - m_visualRefTime;
+                if (deltaRows != 0 && deltaT > 1e-9) {
+                    double observedRate = std::abs(double(deltaRows) / deltaT);
+                    m_rowRate = m_rowRate <= 0.0 ? observedRate : (1.0 - m_rowRateSmoothAlpha) * m_rowRate + m_rowRateSmoothAlpha * observedRate;
+                }
+
+                // refresh reference 
+                m_visualRefLinear = m_logicalRowCounter;
+                m_visualRefTime = nowPos;
+
+                // snap on huge jumps — set local flag so we don't overwrite later in this frame
+                if (std::abs(deltaRows) > int(m_visualSnapThreshold)) {
+                    m_visualRow = float(m_visualRefLinear);
+                    snapped = true;
+                }
+
+                m_prevOrder = m_currentOrder;
+                m_prevRow = m_currentRow;
+            }
+        }
+
+        // compute precise per-row fraction
+        // helper: find next playable (order,row) after current, skipping separators
+        auto findNextPlayable = [&](int order, int row, int &outOrder, int &outRow)->bool {
+            int curOrder = order;
+            int curRow = row;
+            curRow += 1;
+            while (true) {
+                int pat = m_mod->get_order_pattern(curOrder);
+                if (pat == 65534) {
+                    curOrder += 1;
+                    curRow = 0;
+                    if (curOrder >= m_mod->get_num_orders()) return false;
+                    continue;
+                }
+                int plen = m_mod->get_pattern_num_rows(pat);
+                if (curRow < plen) {
+                    outOrder = curOrder;
+                    outRow = curRow;
+                    return true;
+                }
+                // move to next order
+                curOrder += 1;
+                curRow = 0;
+                if (curOrder >= m_mod->get_num_orders()) return false;
+            }
+        };
+
+        // get row start times
+        double timeCurr = m_mod->get_time_at_position(m_currentOrder, m_currentRow);
+        int nextOrder = -1, nextRow = -1;
+        double timeNext = findNextPlayable(m_currentOrder, m_currentRow, nextOrder, nextRow) ? m_mod->get_time_at_position(nextOrder, nextRow) : timeCurr + 1.0;
+        double fraction = 0.0;
+        if (timeNext > timeCurr + 1e-9) {
+            fraction = (nowPos - timeCurr) / (timeNext - timeCurr);
+        } else {
+            // fallback: possible rounding/approximation issue
+            double estRate = m_rowRate;
+            if (estRate <= 0.0) estRate = 1.0;
+            fraction = (nowPos - timeCurr) * estRate;
+        }
+
+        // clamp fraction
+        if (fraction < 0.0) fraction = 0.0;
+        if (fraction > 1.0) fraction = 1.0;
+
+        // target visual row
+        float visualTarget = float(m_logicalRowCounter) + float(fraction);
+        if (!snapped) m_visualRow = visualTarget;
     }
 
     // start auto-fading, if applicable
@@ -590,20 +735,113 @@ void Application::draw(float dt) {
 
     // draw pattern display
     if (m_mod) {
-        uint32_t barColor = m_renderer.extraAlpha(m_config.patternBarBackground, fadeAlpha);
-        m_renderer.box(m_pdBarStartX, m_pdTextY0, m_pdBarEndX, m_pdTextY0 + m_pdTextSize,
-                       barColor, barColor, false, m_pdBarRadius);
         CacheItem tempItem;
-        for (int dRow = -m_pdRows;  dRow <= m_pdRows;  ++dRow) {
-            int row = dRow + m_currentRow;
-            if ((row < 0) || (row >= m_patternLength)) { continue; }
-            float alpha = fadeAlpha * (1.0f - std::pow(std::abs(float(dRow) / float(m_pdRows + 1)), m_config.patternAlphaFalloffShape) * m_config.patternAlphaFalloff);
-            float y = float(m_pdTextY0 + dRow * m_pdTextDY);
+
+        // CUSTOM: lambdas for traversing orders forwards / backwards
+        auto getPrevOrder = [&](int order)->int { return (order > 0) ? (order - 1) : -1; };
+        auto getNextOrder = [&](int order)->int { return (order + 1 < m_mod->get_num_orders()) ? (order + 1) : -1; };
+
+        // CUSTOM: base row as anchor point for smooth scrolling
+        int baseGlobal = int(std::floor(m_visualRow));
+        float frac = m_visualRow - float(baseGlobal);
+
+        int actualOrder = m_currentOrder;
+        int actualPattern = m_currentPattern;
+        int actualLength = m_patternLength;
+
+        for (int dRow = -m_pdRows; dRow <= m_pdRows; ++dRow) {
+            int displayedGlobalRow = baseGlobal + dRow;
+            int row = m_currentRow + displayedGlobalRow - m_logicalRowCounter;
+
+            // CUSTOM: display previous and next orders
+            //         we keep traversing in case we need to display orders that might be further than one away (e.g. short patterns)
+            bool mapped = false;
+            if (row < 0) {
+                // steps back from the start of the current pattern
+                int k = -row;
+                int curOrder = actualOrder;
+
+                while (k > 0) {
+                    int prev = getPrevOrder(curOrder);
+                    if (prev == -1) break;
+
+                    int prevPattern = m_mod->get_order_pattern(prev);
+                    int plen = m_mod->get_pattern_num_rows(prevPattern);
+
+                    // target is inside this pattern
+                    if (k <= plen && prevPattern != 65534) {
+                        m_currentOrder = prev;
+                        m_currentPattern = prevPattern;
+                        m_patternLength = plen;
+                        row = plen - k;
+
+                        mapped = true;
+                        break;
+                    }
+
+                    // otherwise step further back
+                    k -= plen;
+                    curOrder = prev;
+                }
+
+                if (!mapped) continue;
+            } else if (row >= actualLength) {
+                // steps forward from the end of the current pattern
+                int k = row - actualLength;
+                int curOrder = actualOrder;
+
+                while (true) {
+                    int next = getNextOrder(curOrder);
+                    if (next == -1) break;
+
+                    int nextPattern = m_mod->get_order_pattern(next);
+                    int plen = m_mod->get_pattern_num_rows(nextPattern);
+
+                    // target is inside this pattern
+                    if (k < plen && nextPattern != 65534) {
+                        m_currentOrder = next;
+                        m_currentPattern = nextPattern;
+                        m_patternLength = plen;
+                        row = k;
+
+                        mapped = true;
+                        break;
+                    }
+
+                    // otherwise keep going
+                    k -= plen;
+                    curOrder = next;
+                }
+
+                if (!mapped) continue;
+            } else {
+                // inside current pattern, reset to actual values to avoid corruption
+                m_currentOrder   = actualOrder;
+                m_currentPattern = actualPattern;
+                m_patternLength  = actualLength;
+            }
+
+            // vertical pixel position shifted by fractional row so the block slides smoothly
+            float y = float(m_pdTextY0 + dRow * m_pdTextDY - frac * m_pdTextDY);
+            float visualDRow = float(dRow) - frac;
+            float alpha = fadeAlpha * (1.0f - std::pow(std::abs(visualDRow / float(m_pdRows + 1)), m_config.patternAlphaFalloffShape) * m_config.patternAlphaFalloff);
+
+            // check if the displayed line is the logical row being played right now
+            if (displayedGlobalRow == m_logicalRowCounter) {
+                // snap highlight to played row
+                uint32_t hlColor = m_renderer.extraAlpha(m_config.patternBarBackground, fadeAlpha);
+                int y0 = int(std::floor(y));
+                int y1 = int(std::ceil(y + float(m_pdTextDY)));
+                m_renderer.box(m_pdBarStartX, y0, m_pdBarEndX, y1, hlColor, hlColor, false, m_pdBarRadius);
+            }
+
+            // draw pos column and data cells as usual
             if (m_pdPosChars) {
                 formatPosition(m_currentOrder, m_currentPattern, row, tempItem.text, tempItem.attr, m_pdPosChars);
                 drawPatternDisplayCell(float(m_pdPosX), y, tempItem.text, tempItem.attr, alpha, false);
             }
-            for (int ch = 0;  ch < m_numChannels;  ++ch) {
+
+            for (int ch = 0; ch < m_numChannels; ++ch) {
                 float x = float(m_pdChannelX0 + ch * m_pdChannelDX);
                 bool pipe = (m_pdPosChars > 0) || (ch > 0);
                 #if USE_PATTERN_CACHE
