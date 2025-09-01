@@ -753,12 +753,15 @@ void Application::draw(float dt) {
     // draw VU meters
     if (m_mod && m_vuVisible && m_sys.isPlaying() && !m_endReached
     && (m_vuHeight > 0.0f) && ((m_config.vuLowerColor | m_config.vuUpperColor) & 0xFF000000u)) {
+        const int bottomY = m_screenSizeY;
         for (int ch = 0;  ch < m_numChannels;  ++ch) {
             int x = m_pdChannelX0 + ch * m_pdChannelDX;
             float vu = std::min(1.0f, m_mod->get_current_channel_vu_mono(ch)) * fadeAlpha;
             if (vu > 0.0f) {
-                m_renderer.box(x, m_pdTextY0 - int(vu * m_vuHeight + 0.5f),
-                               x + m_pdNoteWidth, m_pdTextY0,
+                int yTop = bottomY - int(vu * m_vuHeight + 0.5f);
+                if (yTop < 0) yTop = 0;
+                m_renderer.box(x, yTop,
+                               x + m_pdNoteWidth, bottomY,
                                m_config.vuUpperColor,
                                m_config.vuLowerColor);
             }
