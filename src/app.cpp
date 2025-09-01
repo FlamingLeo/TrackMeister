@@ -19,6 +19,11 @@
 #include <ebur128.h>
 #include "imgui.h"
 
+#include <filesystem>
+#include <unistd.h>
+
+namespace fs = std::filesystem;
+
 #include "system.h"
 #include "renderer.h"
 #include "textarea.h"
@@ -39,6 +44,35 @@ extern "C" const unsigned char LogoData[];
 
 ///// init + shutdown
 
+std::string getExecPath()
+{
+    std::string buf;
+    buf.resize(4096);
+    ssize_t len = readlink("/proc/self/exe", &buf[0], buf.size());
+    if (len == -1) throw std::runtime_error("readlink(\"/proc/self/exe\") failed");
+    buf.resize(static_cast<size_t>(len));
+    return fs::path(buf).string();
+}
+
+std::string findConfigPath(const std::string& ini_name)
+{
+    try {
+        std::string exe_path = getExecPath();
+        fs::path exe_dir = fs::path(exe_path).parent_path();
+        fs::path candidate = exe_dir / ini_name;
+        if (fs::exists(candidate)) return candidate.string();
+
+        // current working directory
+        candidate = fs::current_path() / ini_name;
+        if (fs::exists(candidate)) return candidate.string();
+
+        // simplicity
+        return (exe_dir / ini_name).string();
+    } catch (...) {
+        return (fs::current_path() / ini_name).string();
+    }
+}
+
 int Application::init(int argc, char* argv[]) {
     if ((argc > 1) && !strcmp(argv[1], "--save-default-config")) {
         return m_config.save("tm_default.ini") ? 0 : 1;
@@ -46,9 +80,7 @@ int Application::init(int argc, char* argv[]) {
 
     // load initial configuration (required for video and audio parameters)
     m_cmdlineConfig.load(Config::prepareCommandLine(argc, argv));
-    m_mainIniFile.assign(argv[0]);
-    PathUtil::dirnameInplace(m_mainIniFile);
-    PathUtil::joinInplace(m_mainIniFile, "tm.ini");
+    m_mainIniFile = findConfigPath("tm.ini");
     m_globalConfig.load(m_mainIniFile.c_str());
     updateConfig();
 

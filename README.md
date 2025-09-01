@@ -1,4 +1,4 @@
-**FORK**: Patterns are drawn continuously, directly before / after another, instead of having just the current pattern drawn + Smooth scrolling like OpenMPT's.
+**FORK**: Patterns are drawn continuously, directly before / after another, instead of having just the current pattern drawn + Smooth scrolling like OpenMPT + Load tm.ini inside binary location from anywhere.
 
 ---
 
