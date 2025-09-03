@@ -703,12 +703,12 @@ void Application::draw(float dt) {
         // get row start times
         double timeCurr = m_mod->get_time_at_position(m_currentOrder, m_currentRow);
         int nextOrder = -1, nextRow = -1;
-        double timeNext = findNextPlayable(m_currentOrder, m_currentRow, nextOrder, nextRow) ? m_mod->get_time_at_position(nextOrder, nextRow) : timeCurr + 1.0;
+        double timeNext = findNextPlayable(m_currentOrder, m_currentRow, nextOrder, nextRow) ? m_mod->get_time_at_position(nextOrder, nextRow) : timeCurr + 1.0;;
         double fraction = 0.0;
         if (timeNext > timeCurr + 1e-9) {
             fraction = (nowPos - timeCurr) / (timeNext - timeCurr);
+            do { fraction = std::fmod(fraction, 32); } while(fraction > 32);
         } else {
-            // fallback: possible rounding/approximation issue
             double estRate = m_rowRate;
             if (estRate <= 0.0) estRate = 1.0;
             fraction = (nowPos - timeCurr) * estRate;
